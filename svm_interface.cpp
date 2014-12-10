@@ -1,5 +1,3 @@
-/*Now why you loer en kyk gelyk?
-  Is ek miskien van goud gemake?*/
 #include "libsvm-weights-3.18/svm.h"
 #include "svm_interface.h"
 #include <iostream>
@@ -23,10 +21,10 @@ double maxSignificance(TH1D* sig, TH1D* bkg, bool info, double unc = 0.25, TH1D*
   if(info) std::cout<<  " mean bin " << min_bin << "   ";
   float intSig = 0., intBkg = 0.;
   int maxBin = 0;
-  for (int ind = min_bin; ind < 400 ; ind++)
+  for (int ind = min_bin; ind < max_bin ; ind++)
     {
-      intSig = sig->Integral(ind ,401);
-      intBkg = bkg->Integral(ind, 401);
+      intSig = sig->Integral(ind,  max_bin);
+      intBkg = bkg->Integral(ind, ,max_bin);
       //well you have less than 3 signal events left...  
       if(intSig < 3.) 
 	{
