@@ -5,49 +5,34 @@
 #include <cmath>
 #include <TH1D.h>
 #include "fom.h"
-
-double maxSignificance(TH1D* sig, TH1D* bkg, bool info, double unc = 0.25, TH1D* cuteff = 0)
-{
-  fom FoM(unc); //%25 unc is assumed
-  bool docuteff = false;
-  if(cuteff) docuteff = true; 
-  float sign = 0.;
-  float max_sign = -1.;
-  int max_bin = sig->GetSize() - 2; //substracting over-under flow bins
-  if(max_bin != bkg->GetSize() - 2) {std::cout << " ERROR! Bin numbers are different. " << std::endl; exit(2);}
-  int min_bin = 0;
-  if(docuteff) min_bin = 0;
-  else min_bin  =   (int)(bkg->GetMean()*(double)max_bin); // background -> 0 , signal -> 1 
-  if(info) std::cout<<  " mean bin " << min_bin << "   ";
-  float intSig = 0., intBkg = 0.;
-  int maxBin = 0;
-  for (int ind = min_bin; ind < max_bin ; ind++)
-    {
-      intSig = sig->Integral(ind,  max_bin);
-      intBkg = bkg->Integral(ind, ,max_bin);
-      //well you have less than 3 signal events left...  
-      if(intSig < 3.) 
-	{
-	  if(info) std::cout << " integrals sig " << intSig << " bkg " << intBkg << "    " ;
-	  if(info) std::cout << " cut for the max significance is on bin " << maxBin << " with significance " << max_sign <<  std::endl;
-	  return max_sign;
-	}
-      FoM.setSignal(intSig); FoM.setBackground(intBkg);
-      sign = FoM.getSignificance(fom::asimov); //AsimovZ is better
-      if(docuteff) cuteff->SetBinContent(ind,sign);
-      if(max_sign < sign) {max_sign = sign; maxBin = ind;}
-    }
-  if(info) std::cout << " cut for the max significance is on bin " << maxBin << " with significance " << max_sign << std::endl;
-  return max_sign;
-}
-
+#include "TMath.h"
+#define fEpsilon 1.e-2
+double TransformLikelihoodOutput( Double_t ps, Double_t pb )                                                                                                                                                   
+{   
+  if (ps < fEpsilon) ps = fEpsilon;
+  if (pb < fEpsilon) pb = fEpsilon;
+  Double_t r = ps/(ps + pb);                                                                                                                                                                                                                 
+  if (r >= 1.0) r = 1. - 1.e-2;
+  // inverse Fermi function
+  // sanity check                                                                                                                                                                                                                         
+    if      (r <= 0.0) r = fEpsilon;                                                                                                                                                                                                        
+    else if (r >= 1.0) r = 1. - 1.e-2;
+    Double_t tau = 2.;// 15.0;
+    r = - TMath::Log10(1/r - 1.0)/tau; 
+    //  }
+  return r;                                                                                                                                                                                                                                  
+}                    
 
 void csvc_interface::obtain_probabilities(double c_p , double g_p)
 {
-  
-  disc_S = new TH1D("svm_disc_signal", "SVM probability signal",hist_nbin,0.,1.);
-  disc_B = new TH1D("svm_disc_background", "SVM probability background",hist_nbin,0.,1.);
-  cuteff = new TH1D("svm_disc_cuteff", "SVM Cut Efficiency",hist_nbin,0.,1.);
+
+  disc_S = new TH1D("svm_disc_signal", "SVM probability signal",25,0.,1.);
+  disc_B = new TH1D("svm_disc_background", "SVM probability background",25,0.,1.);
+  cuteff = new TH1D("svm_disc_cuteff", "SVM Cut Efficiency",25,0.,1.);
+
+  disc_S->Sumw2();  
+  disc_B->Sumw2();  
+
   double prob[2];
   set_para_gamma(g_p);
   set_para_c(c_p);
@@ -70,7 +55,8 @@ void csvc_interface::obtain_probabilities(double c_p , double g_p)
       svm_predict_probability(csvc_svm_model,sample_tra.x[comp],prob);
       disc_B->Fill(prob[1],sample_tra.W[comp]);
     }
-  std::cout<<" maximum significance with AsimovZ " <<  maxSignificance(disc_S, disc_B, true, 0.25, cuteff) << std::endl;  
+  fom FOM (0.25);
+  std::cout<<" maximum significance with AsimovZ " <<  FOM.maxSignificance(disc_S, disc_B, true, cuteff) << std::endl;  
   /* for(int comp = 0; comp < nsamp_test; comp++)
     {
       svm_predict_probability(csvc_svm_model,sample_test.x[comp],prob);
@@ -148,25 +134,31 @@ double csvc_interface::para_scan_omp(double C, double pre_accur){
   deep_copy_svm_pro(sample_tra, nsamp_tra, svm_node_max, nsamp_tra, para_scan_problem_tra);
   svm_problem para_scan_problem_test;
   deep_copy_svm_pro(sample_test, nsamp_test,svm_node_max, 0 ,para_scan_problem_test);
-  TH1D* hSig;
-  TH1D* hBkg;
-  double prob[] = {0,0} ;  
-  //#pragma omp parallel for shared (para_scan_problem_test,para_scan_problem_tra) private (hSig,hBkg,prob)
+  TH1D* hSig[gamma.size()];
+  TH1D* hBkg[gamma.size()];
+  
   for(int indg = 0; indg < gamma.size(); indg++){
-    svm_model * csvc_svm_model;  
+    hSig[indg] = new TH1D("signal"+indg, "SVM probability signal"+indg,400,0.,1.);
+    hBkg[indg] = new TH1D("background"+indg, "SVM probability background"+indg,400,0.,1.);
+    hSig[indg]->SetDirectory(0);
+    hBkg[indg]->SetDirectory(0);
+ }
+
+#pragma omp parallel for shared (para_scan_problem_test,para_scan_problem_tra, hSig, hBkg)
+  for(int indg = 0; indg < gamma.size(); indg++){
+    svm_model * csvc_svm_model;
+
     csvc_svm_model=  svm_train(&(para_scan_problem_tra),&(scan_parameters.at(indg)));
     double accur_S = 0.;
     double accur_B = 0.;
-
-    hSig = new TH1D("signal"+indg, "SVM probability signal"+indg,400,0.,1.);
-    hBkg = new TH1D("background"+indg, "SVM probability background"+indg,400,0.,1.);
+    double prob[] = {0,0} ;  
    
     for(int comp = 0; comp < nsamp_test; comp++)
       {
 	
 	svm_predict_probability(csvc_svm_model,para_scan_problem_test.x[comp],prob);
-	if(nbkg_test > comp) hBkg->Fill(prob[1],para_scan_problem_test.W[comp]);
-	else hSig->Fill(prob[1],para_scan_problem_test.W[comp]);
+	if(nbkg_test > comp) hBkg[indg]->Fill(prob[1],para_scan_problem_test.W[comp]);
+	else hSig[indg]->Fill(prob[1],para_scan_problem_test.W[comp]);
 	/*    
 	      if(fabs(svm_predict(csvc_svm_model, para_scan_problem_test.x[comp])-2)<0.1 && comp> nbkg_test) 
 	      accur_S+=para_scan_problem_test.W[comp];
@@ -178,10 +170,16 @@ double csvc_interface::para_scan_omp(double C, double pre_accur){
     bool info = true;
 
     //    accur[indg] = ((double)accur_S)/nsig_test + ((double)accur_B)/nbkg_test;
-    accur[indg] = maxSignificance(hSig, hBkg, true);  //accur_S/nsig_test_w + accur_B/nbkg_test_w; /// sqrt(accur_B+pow(accur_B*0.2,2));
+    
     svm_free_and_destroy_model(&csvc_svm_model);    
-    hSig->Delete();
-    hBkg->Delete();
+  }
+  //assume 25% unc
+  fom FOM(0.25);
+  //this can be included inside of the above loop but due to OMP thread exclusivity, it is better to run it outside 
+  for(int ind = 0; ind < gamma.size(); ind++){
+    accur[ind] = FOM.maxSignificance(hSig[ind], hBkg[ind], true);  //accur_S/nsig_test_w + accur_B/nbkg_test_w; /// sqrt(accur_B+pow(accur_B*0.2,2));
+    hSig[ind]->Delete();
+    hBkg[ind]->Delete();
   }
   for(int ind = 0; ind<gamma.size()-1; ind++) {
     if(accur[ind] > accur[ind+1]) accur[ind+1] = accur[ind]; 
